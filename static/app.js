@@ -458,6 +458,10 @@ function wireEvents() {
     $("#import-dialog").showModal();
   });
 
+  $("#import-cancel").addEventListener("click", () => {
+    $("#import-dialog").close();
+  });
+
   $("#import-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const path = $("#import-path").value.trim();
