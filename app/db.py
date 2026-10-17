@@ -455,6 +455,7 @@ def init_library_schema(library_id: str) -> None:
             """
         )
         _migrate_fts_if_needed(conn)
+        _prune_authors_without_books(conn)
         conn.commit()
 
 
@@ -512,6 +513,17 @@ def _upsert_author(conn: sqlite3.Connection, name: str) -> int:
     return cur.lastrowid
 
 
+def _prune_authors_without_books(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        DELETE FROM authors
+        WHERE NOT EXISTS (
+            SELECT 1 FROM book_authors ba WHERE ba.author_id = authors.id
+        )
+        """
+    )
+
+
 def _set_book_authors(
     conn: sqlite3.Connection, book_id: int, author_names: list[str]
 ) -> None:
@@ -525,6 +537,7 @@ def _set_book_authors(
             "INSERT OR IGNORE INTO book_authors (book_id, author_id, position) VALUES (?, ?, ?)",
             (book_id, author_id, i),
         )
+    _prune_authors_without_books(conn)
 
 
 def _upsert_tag(conn: sqlite3.Connection, name: str) -> int:
@@ -669,6 +682,9 @@ def create_book(
 ) -> int:
     title = title.strip() or "Unknown"
     language = normalize_language(language)
+    if series is not None and not str(series).strip():
+        series = None
+        series_index = None
     cur = conn.execute(
         """
         INSERT INTO books (
@@ -730,6 +746,8 @@ def update_book(
             val = fields[key]
             if key == "language":
                 val = normalize_language(val)
+            if key == "series" and isinstance(val, str) and not val.strip():
+                val = None
             values.append(val)
             if key == "title":
                 updates.append("title_norm = ?")
@@ -879,7 +897,16 @@ def list_books(
 def list_filter_options(conn: sqlite3.Connection) -> dict[str, list[str]]:
     authors = [
         r["name"]
-        for r in conn.execute("SELECT name FROM authors ORDER BY name COLLATE NOCASE").fetchall()
+        for r in conn.execute(
+            """
+            SELECT a.name
+            FROM authors a
+            WHERE EXISTS (
+                SELECT 1 FROM book_authors ba WHERE ba.author_id = a.id
+            )
+            ORDER BY a.name COLLATE NOCASE
+            """
+        ).fetchall()
     ]
     tags = [
         r["name"]
@@ -888,7 +915,14 @@ def list_filter_options(conn: sqlite3.Connection) -> dict[str, list[str]]:
     series = [
         r["series"]
         for r in conn.execute(
-            "SELECT DISTINCT series FROM books WHERE series IS NOT NULL AND series != '' ORDER BY series COLLATE NOCASE"
+            """
+            SELECT series
+            FROM books
+            WHERE series IS NOT NULL AND trim(series) != ''
+            GROUP BY series
+            HAVING COUNT(*) > 0
+            ORDER BY series COLLATE NOCASE
+            """
         ).fetchall()
     ]
     formats = [

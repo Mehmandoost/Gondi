@@ -107,10 +107,30 @@ async function switchLibrary(libraryId) {
   await loadBooks();
 }
 
+function dropMissingFilters() {
+  const lists = {
+    author: "authors",
+    tag: "tags",
+    series: "series",
+    format: "formats",
+  };
+  let dropped = false;
+  for (const [key, listKey] of Object.entries(lists)) {
+    const selected = state.active[key];
+    if (selected && !(state.filters[listKey] || []).includes(selected)) {
+      state.active[key] = "";
+      dropped = true;
+    }
+  }
+  return dropped;
+}
+
 async function loadFilters() {
   if (!state.libraryId) return;
   state.filters = await api(`${apiBase()}/filters`);
+  const dropped = dropMissingFilters();
   renderFilters();
+  if (dropped) await loadBooks();
 }
 
 async function loadBooks() {
