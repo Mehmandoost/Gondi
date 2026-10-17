@@ -31,5 +31,6 @@ Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
 - **Libraries** — switch, create, rename, or delete libraries from the header (the last library cannot be deleted).
 - **Import folder** — enter an absolute path on this machine; EPUB and PDF metadata are read when available, with filename fallback for other types.
 - **Upload file** — add a single `.epub`, `.pdf`, `.mobi`, or `.azw3` file.
+- **Book detail** — add or remove format files on a book, or delete the book entirely (removing the last file deletes the book).
 - **Search** — matches title, author, tags, series, and description (SQLite FTS5).
 - **Fetch metadata** — on a book’s detail panel, pick a match from Open Library to fill fields and download a cover.

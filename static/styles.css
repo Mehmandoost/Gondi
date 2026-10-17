@@ -302,13 +302,56 @@ button.primary {
   border-radius: 4px;
 }
 
-.downloads {
-  font-size: 0.85rem;
-  margin-top: 1rem;
+.book-files {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
 }
 
-.downloads a {
+.book-files-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.file-list {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+  font-size: 0.85rem;
+}
+
+.file-row a {
   color: var(--accent);
+}
+
+.file-row .remove-file {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+}
+
+.add-file-btn {
+  font-size: 0.85rem;
+}
+
+.detail-danger {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+button.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+  width: 100%;
 }
 
 dialog {

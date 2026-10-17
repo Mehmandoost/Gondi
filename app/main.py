@@ -128,6 +128,16 @@ def get_book(library_id: str, book_id: int) -> dict[str, Any]:
     return book
 
 
+@app.delete("/api/libraries/{library_id}/books/{book_id}")
+def delete_book_endpoint(library_id: str, book_id: int) -> dict[str, bool]:
+    _require_library(library_id)
+    with db.get_connection(library_id) as conn:
+        if not db.delete_book(conn, library_id, book_id):
+            raise HTTPException(status_code=404, detail="Book not found")
+        conn.commit()
+    return {"deleted": True}
+
+
 @app.patch("/api/libraries/{library_id}/books/{book_id}")
 def patch_book(
     library_id: str, book_id: int, body: BookPatch
@@ -180,6 +190,87 @@ async def upload_book(
     with db.get_connection(library_id) as conn:
         book = db.get_book(conn, book_id)
     return {"status": status, "book": book}
+
+
+@app.post("/api/libraries/{library_id}/books/{book_id}/files")
+async def add_book_file(
+    library_id: str, book_id: int, file: UploadFile = File(...)
+) -> dict[str, Any]:
+    _require_library(library_id)
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Missing filename")
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in {".epub", ".pdf", ".mobi", ".azw3"}:
+        raise HTTPException(status_code=400, detail="Unsupported format")
+    fmt = importer.format_from_path(Path(file.filename))
+    if not fmt:
+        raise HTTPException(status_code=400, detail="Unsupported format")
+
+    temp_dir = db.DATA_DIR / "tmp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = temp_dir / f"upload-{file.filename}"
+    content = await file.read()
+    temp_path.write_bytes(content)
+    try:
+        with db.get_connection(library_id) as conn:
+            if not db.get_book(conn, book_id):
+                raise HTTPException(status_code=404, detail="Book not found")
+            old_row = conn.execute(
+                "SELECT file_path FROM formats WHERE book_id = ? AND format = ?",
+                (book_id, fmt),
+            ).fetchone()
+            had_format = old_row is not None
+            old_stored = old_row["file_path"] if old_row else None
+
+            file_path, file_size = importer._copy_book_file(
+                library_id, conn, temp_path, book_id, fmt
+            )
+            db.add_format(conn, book_id, fmt, file_path, file_size)
+
+            if old_stored and old_stored != file_path:
+                parent = db.unlink_format_file_on_disk(
+                    library_id, book_id, fmt, old_stored
+                )
+                if parent:
+                    db.prune_book_storage(library_id, parent)
+
+            conn.commit()
+            book = db.get_book(conn, book_id)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    return {"status": "replaced" if had_format else "added", "book": book}
+
+
+@app.delete("/api/libraries/{library_id}/books/{book_id}/files/{format_name}")
+def remove_book_file(
+    library_id: str, book_id: int, format_name: str
+) -> dict[str, Any]:
+    _require_library(library_id)
+    with db.get_connection(library_id) as conn:
+        if not db.get_book(conn, book_id):
+            raise HTTPException(status_code=404, detail="Book not found")
+        stored = db.remove_format(conn, book_id, format_name)
+        if stored is None:
+            raise HTTPException(status_code=404, detail="Format not found")
+
+        parent = db.unlink_format_file_on_disk(
+            library_id, book_id, format_name, stored
+        )
+        if parent:
+            db.prune_book_storage(library_id, parent)
+
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS n FROM formats WHERE book_id = ?",
+            (book_id,),
+        ).fetchone()["n"]
+        if remaining == 0:
+            db.delete_book(conn, library_id, book_id)
+            conn.commit()
+            return {"book": None, "deleted": True}
+
+        conn.commit()
+        return {"book": db.get_book(conn, book_id), "deleted": False}
 
 
 @app.get("/api/libraries/{library_id}/books/{book_id}/metadata-candidates")

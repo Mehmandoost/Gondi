@@ -265,6 +265,18 @@ function renderGrid() {
   });
 }
 
+function closeDetail() {
+  $("#detail-panel").hidden = true;
+  state.selectedId = null;
+  renderGrid();
+}
+
+async function afterBookRemoved() {
+  closeDetail();
+  await loadBooks();
+  await loadFilters();
+}
+
 async function openDetail(id) {
   state.selectedId = id;
   renderGrid();
@@ -273,14 +285,19 @@ async function openDetail(id) {
   const content = $("#detail-content");
   panel.hidden = false;
 
-  const formats = (book.formats || [])
+  const fileRows = (book.formats || [])
     .map(
       (f) =>
-        `<a href="${apiBase()}/books/${book.id}/file/${f.format}" download>${escapeHtml(
+        `<li class="file-row">
+          <a href="${apiBase()}/books/${book.id}/file/${encodeURIComponent(
           f.format
-        )}</a>`
+        )}" download>${escapeHtml(f.format)}</a>
+          <button type="button" class="remove-file" data-format="${escapeAttr(
+            f.format
+          )}">Remove</button>
+        </li>`
     )
-    .join(" · ");
+    .join("");
 
   content.innerHTML = `
     <div class="detail-cover">
@@ -310,7 +327,21 @@ async function openDetail(id) {
         <button type="button" id="fetch-metadata">Fetch metadata</button>
       </div>
     </form>
-    ${formats ? `<p class="downloads"><strong>Download:</strong> ${formats}</p>` : ""}
+    <section class="book-files">
+      <h3 class="book-files-title">Files</h3>
+      ${
+        fileRows
+          ? `<ul class="file-list">${fileRows}</ul>`
+          : `<p class="hint">No files attached.</p>`
+      }
+      <label class="upload-btn add-file-btn">
+        Add file
+        <input type="file" class="book-file-input" accept=".epub,.pdf,.mobi,.azw3" hidden />
+      </label>
+    </section>
+    <div class="detail-danger">
+      <button type="button" id="delete-book" class="danger">Delete book</button>
+    </div>
   `;
 
   content.querySelector("#edit-form").addEventListener("submit", async (e) => {
@@ -346,6 +377,71 @@ async function openDetail(id) {
   content.querySelector("#fetch-metadata").addEventListener("click", () =>
     openMetadataDialog(id)
   );
+
+  content.querySelectorAll(".remove-file").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const format = btn.dataset.format;
+      const ok = window.confirm(
+        `Remove the ${format} file from this book?`
+      );
+      if (!ok) return;
+      try {
+        const data = await api(
+          `${apiBase()}/books/${id}/files/${encodeURIComponent(format)}`,
+          { method: "DELETE" }
+        );
+        if (data.deleted) {
+          showStatus("Book removed (no files left).");
+          await afterBookRemoved();
+        } else {
+          showStatus("File removed.");
+          await loadBooks();
+          await loadFilters();
+          openDetail(id);
+        }
+      } catch (err) {
+        showStatus(err.message, true);
+      }
+    });
+  });
+
+  const fileInput = content.querySelector(".book-file-input");
+  fileInput.addEventListener("change", async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const form = new FormData();
+    form.append("file", file);
+    showStatus("Uploading…");
+    try {
+      const res = await fetch(`${apiBase()}/books/${id}/files`, {
+        method: "POST",
+        body: form,
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      showStatus(`File ${data.status}.`);
+      await loadBooks();
+      await loadFilters();
+      openDetail(id);
+    } catch (err) {
+      showStatus(err.message, true);
+    }
+    e.target.value = "";
+  });
+
+  content.querySelector("#delete-book").addEventListener("click", async () => {
+    const ok = window.confirm(
+      `Delete “${book.title}” and all its files? This cannot be undone.`
+    );
+    if (!ok) return;
+    try {
+      await api(`${apiBase()}/books/${id}`, { method: "DELETE" });
+      showStatus("Book deleted.");
+      await afterBookRemoved();
+    } catch (err) {
+      showStatus(err.message, true);
+    }
+  });
 }
 
 function splitList(value) {
@@ -532,11 +628,7 @@ function wireEvents() {
     e.target.value = "";
   });
 
-  $("#close-detail").addEventListener("click", () => {
-    $("#detail-panel").hidden = true;
-    state.selectedId = null;
-    renderGrid();
-  });
+  $("#close-detail").addEventListener("click", () => closeDetail());
 }
 
 function debounce(fn, ms) {

@@ -804,6 +804,87 @@ def add_format(
     )
 
 
+def prune_book_storage(library_id: str, path: Path) -> None:
+    _prune_empty_parents(path, library_books_dir(library_id))
+
+
+def unlink_format_file_on_disk(
+    library_id: str,
+    book_id: int,
+    format_name: str,
+    stored_path: str,
+) -> Path | None:
+    """Delete a format file under the library data dir; return its parent for pruning."""
+    path = resolve_format_file_on_disk(
+        library_id, book_id, format_name, stored_path
+    )
+    if not path or not path.is_file():
+        return None
+    if not safe_data_path(path, library_id):
+        return None
+    parent = path.parent
+    path.unlink(missing_ok=True)
+    return parent
+
+
+def remove_format(
+    conn: sqlite3.Connection, book_id: int, format_name: str
+) -> str | None:
+    """Remove a format row; return stored file_path, or None if missing."""
+    fmt = format_name.lower()
+    row = conn.execute(
+        "SELECT file_path FROM formats WHERE book_id = ? AND format = ?",
+        (book_id, fmt),
+    ).fetchone()
+    if not row:
+        return None
+    conn.execute(
+        "DELETE FROM formats WHERE book_id = ? AND format = ?",
+        (book_id, fmt),
+    )
+    conn.execute(
+        "UPDATE books SET updated_at = datetime('now') WHERE id = ?",
+        (book_id,),
+    )
+    return row["file_path"]
+
+
+def delete_book(conn: sqlite3.Connection, library_id: str, book_id: int) -> bool:
+    row = conn.execute("SELECT cover_path FROM books WHERE id = ?", (book_id,)).fetchone()
+    if not row:
+        return False
+
+    books_root = library_books_dir(library_id)
+    parents_to_prune: set[Path] = set()
+
+    format_rows = conn.execute(
+        "SELECT format, file_path FROM formats WHERE book_id = ?",
+        (book_id,),
+    ).fetchall()
+    for fmt_row in format_rows:
+        parent = unlink_format_file_on_disk(
+            library_id,
+            book_id,
+            fmt_row["format"],
+            fmt_row["file_path"],
+        )
+        if parent:
+            parents_to_prune.add(parent)
+
+    if row["cover_path"]:
+        cover = Path(row["cover_path"])
+        if cover.is_file() and safe_data_path(cover, library_id):
+            cover.unlink(missing_ok=True)
+
+    conn.execute("DELETE FROM books_fts WHERE rowid = ?", (book_id,))
+    conn.execute("DELETE FROM books WHERE id = ?", (book_id,))
+
+    for parent in parents_to_prune:
+        _prune_empty_parents(parent, books_root)
+
+    return True
+
+
 def get_book(conn: sqlite3.Connection, book_id: int) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
     if not row:
