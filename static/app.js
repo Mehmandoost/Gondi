@@ -191,7 +191,10 @@ function escapeAttr(str) {
 
 function coverUrl(book) {
   if (!book.has_cover) return null;
-  return `${apiBase()}/books/${book.id}/cover`;
+  const token = encodeURIComponent(
+    `${state.libraryId}:${book.id}:${book.updated_at || ""}`
+  );
+  return `${apiBase()}/books/${book.id}/cover?v=${token}`;
 }
 
 function renderGrid() {
@@ -425,9 +428,13 @@ async function deleteLibrary() {
   );
   if (!ok) return;
   try {
-    await api(`/api/libraries/${encodeURIComponent(state.libraryId)}`, {
+    const deletedId = state.libraryId;
+    await api(`/api/libraries/${encodeURIComponent(deletedId)}`, {
       method: "DELETE",
     });
+    if (localStorage.getItem(LIBRARY_STORAGE_KEY) === deletedId) {
+      localStorage.removeItem(LIBRARY_STORAGE_KEY);
+    }
     resetCatalogView();
     await loadLibraries();
     await loadFilters();

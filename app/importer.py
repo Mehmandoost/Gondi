@@ -9,12 +9,14 @@ from pypdf import PdfReader
 
 from app import db
 from app.epub_opf import parse_epub_opf
+from app.epub_text import normalize_published_date, strip_html
 from app.languages import normalize_language
 
 
 EBOOK_EXTENSIONS = {".epub", ".pdf", ".mobi", ".azw3"}
 
 _VOLUME_SUFFIX = re.compile(r":\s*Volume\s+(\d+)\s*$", re.IGNORECASE)
+_OPF_NS = "{http://www.idpf.org/2007/opf}"
 
 
 @dataclass
@@ -79,6 +81,13 @@ def _parse_filename(path: Path) -> ParsedBook:
 
 def _epub_creator_roles(book: epub.EpubBook) -> dict[str, str]:
     roles: dict[str, str] = {}
+    for _name, attrs in book.get_metadata("DC", "creator"):
+        if not attrs:
+            continue
+        creator_id = attrs.get("id")
+        role = attrs.get(f"{_OPF_NS}role") or attrs.get("role")
+        if creator_id and role:
+            roles[creator_id] = str(role).strip()
     for value, attrs in book.get_metadata("OPF", "meta"):
         if not attrs:
             continue
@@ -129,12 +138,25 @@ def _epub_authors(book: epub.EpubBook) -> list[str]:
 
 
 def _epub_isbn(book: epub.EpubBook) -> str | None:
-    for value, _attrs in book.get_metadata("DC", "identifier"):
+    identifiers = book.get_metadata("DC", "identifier")
+    preferred: list[str] = []
+    fallback: list[str] = []
+    for value, attrs in identifiers:
         if not value:
             continue
+        attrs = attrs or {}
+        scheme = attrs.get("{http://www.idpf.org/2007/opf}scheme") or attrs.get(
+            "scheme", ""
+        )
         digits = re.sub(r"[^0-9]", "", value)
-        if len(digits) in (10, 13):
-            return digits
+        if len(digits) not in (10, 13):
+            continue
+        if scheme.upper() == "ISBN" or attrs.get("id") == "PrimaryID":
+            preferred.append(digits)
+        else:
+            fallback.append(digits)
+    for digits in preferred + fallback:
+        return digits
     return None
 
 
@@ -146,16 +168,47 @@ def _series_from_title(title: str) -> tuple[str | None, float | None]:
     return (series or None, float(match.group(1)))
 
 
+def _cover_bytes_from_item(item) -> tuple[bytes | None, str]:
+    cover_ext = ".jpg"
+    cover_bytes = item.get_content()
+    name = item.get_name() or item.get_id() or ""
+    if "." in name:
+        cover_ext = "." + name.rsplit(".", 1)[-1].lower()
+    return cover_bytes, cover_ext
+
+
 def _extract_epub_cover(book: epub.EpubBook) -> tuple[bytes | None, str]:
     cover_ext = ".jpg"
     try:
         for item in book.get_items():
             if item.get_type() == ebooklib.ITEM_COVER:
-                cover_bytes = item.get_content()
+                return _cover_bytes_from_item(item)
+
+        by_id = {item.get_id(): item for item in book.get_items() if item.get_id()}
+        if "cover-image" in by_id:
+            return _cover_bytes_from_item(by_id["cover-image"])
+
+        cover_file: str | None = None
+        for _value, attrs in book.get_metadata("OPF", "meta"):
+            if attrs and attrs.get("name") == "cover" and attrs.get("content"):
+                cover_file = str(attrs["content"]).strip()
+                break
+
+        if cover_file:
+            cover_base = Path(cover_file).name
+            for item in book.get_items():
+                if item.get_type() != ebooklib.ITEM_IMAGE:
+                    continue
                 name = item.get_name() or ""
-                if "." in name:
-                    cover_ext = "." + name.rsplit(".", 1)[-1].lower()
-                return cover_bytes, cover_ext
+                if name.endswith(cover_file) or Path(name).name == cover_base:
+                    return _cover_bytes_from_item(item)
+
+        for item in book.get_items():
+            if item.get_type() != ebooklib.ITEM_IMAGE:
+                continue
+            item_id = (item.get_id() or "").lower()
+            if "cover" in item_id:
+                return _cover_bytes_from_item(item)
     except Exception:
         pass
     return None, cover_ext
@@ -180,9 +233,9 @@ def _build_parsed_epub(
     return ParsedBook(
         title=resolved_title,
         authors=authors or fallback.authors,
-        description=description,
+        description=strip_html(description),
         publisher=publisher,
-        published_date=published_date,
+        published_date=normalize_published_date(published_date),
         language=normalize_language(language),
         isbn=isbn,
         tags=tags,

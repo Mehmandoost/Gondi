@@ -119,6 +119,9 @@ def create_library(name: str) -> dict[str, str]:
     libraries = _load_registry()
     existing_ids = {lib["id"] for lib in libraries}
     library_id = _unique_library_id(name, existing_ids)
+    lib_path = library_dir(library_id)
+    if lib_path.exists():
+        shutil.rmtree(lib_path)
     ensure_library_dirs(library_id)
     libraries.append({"id": library_id, "name": name})
     _save_registry(libraries)

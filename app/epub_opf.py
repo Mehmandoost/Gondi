@@ -69,8 +69,46 @@ def _zip_entry_path(opf_dir: str, href: str) -> str:
     return str(PurePosixPath(opf_dir, href))
 
 
+def _find_cover_href(
+    metadata: ET.Element | None, manifest: ET.Element | None
+) -> str | None:
+    cover_from_meta: str | None = None
+    if metadata is not None:
+        for el in metadata:
+            if _local_name(el.tag) != "meta":
+                continue
+            if el.get("name") == "cover" and el.get("content"):
+                cover_from_meta = el.get("content", "").strip() or None
+                break
+
+    manifest_items: list[ET.Element] = []
+    if manifest is not None:
+        for item in manifest:
+            if _local_name(item.tag) != "item":
+                continue
+            manifest_items.append(item)
+            item_id = item.get("id") or ""
+            if item_id == "cover-image":
+                href = item.get("href")
+                if href:
+                    return href
+            props = (item.get("properties") or "").split()
+            if "cover-image" in props:
+                href = item.get("href")
+                if href:
+                    return href
+
+    if cover_from_meta and manifest_items:
+        base = cover_from_meta.split("/")[-1]
+        for item in manifest_items:
+            href = item.get("href") or ""
+            if href.endswith(cover_from_meta) or href.split("/")[-1] == base:
+                return href
+
+    return None
+
+
 def _read_cover(zf: ZipFile, opf_root: ET.Element, opf_dir: str) -> tuple[bytes | None, str]:
-    cover_href: str | None = None
     metadata = None
     manifest = None
     for child in opf_root:
@@ -80,26 +118,7 @@ def _read_cover(zf: ZipFile, opf_root: ET.Element, opf_dir: str) -> tuple[bytes 
         elif name == "manifest":
             manifest = child
 
-    if metadata is not None:
-        for el in metadata:
-            if _local_name(el.tag) != "meta":
-                continue
-            if el.get("name") == "cover" and el.get("content"):
-                cover_href = el.get("content")
-                break
-
-    if manifest is not None:
-        for item in manifest:
-            if _local_name(item.tag) != "item":
-                continue
-            props = item.get("properties") or ""
-            href = item.get("href")
-            if not href:
-                continue
-            if "cover-image" in props.split():
-                cover_href = href
-                break
-
+    cover_href = _find_cover_href(metadata, manifest)
     if not cover_href:
         return None, ".jpg"
 

@@ -227,7 +227,11 @@ def get_cover(library_id: str, book_id: int):
         media = "image/gif"
     elif path.suffix.lower() == ".webp":
         media = "image/webp"
-    return FileResponse(path, media_type=media)
+    return FileResponse(
+        path,
+        media_type=media,
+        headers={"Cache-Control": "private, no-cache"},
+    )
 
 
 @app.get("/api/libraries/{library_id}/books/{book_id}/file/{format_name}")
