@@ -2,7 +2,7 @@
 
 A local book library: import ebooks from a folder, search and filter your catalog, edit metadata, and enrich records from [Open Library](https://openlibrary.org/).
 
-Books and the SQLite database live in `data/` next to the project. The server binds to localhost only.
+Books and catalogs live in `data/` next to the project. You can keep multiple libraries; each has its own SQLite database, `books/`, and `covers/` under `data/libraries/<id>/`. The list of libraries is in `data/libraries.json`. The server binds to localhost only.
 
 ## Requirements
 
@@ -28,6 +28,7 @@ Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
 
 ## Usage
 
+- **Libraries** — switch, create, rename, or delete libraries from the header (the last library cannot be deleted).
 - **Import folder** — enter an absolute path on this machine; EPUB and PDF metadata are read when available, with filename fallback for other types.
 - **Upload file** — add a single `.epub`, `.pdf`, `.mobi`, or `.azw3` file.
 - **Search** — matches title, author, tags, series, and description (SQLite FTS5).

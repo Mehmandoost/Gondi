@@ -72,12 +72,13 @@ async def fetch_cover_bytes(url: str) -> bytes | None:
 
 
 async def apply_metadata(
+    library_id: str,
     book_id: int,
     candidate: dict[str, Any],
     *,
     replace_fields: bool = True,
 ) -> dict[str, Any] | None:
-    with db.get_connection() as conn:
+    with db.get_connection(library_id) as conn:
         book = db.get_book(conn, book_id)
         if not book:
             return None
@@ -106,7 +107,7 @@ async def apply_metadata(
         if cover_url:
             cover_data = await fetch_cover_bytes(cover_url)
             if cover_data:
-                cover_path = db.COVERS_DIR / f"{book_id}.jpg"
+                cover_path = db.library_covers_dir(library_id) / f"{book_id}.jpg"
                 cover_path.write_bytes(cover_data)
                 db.set_book_cover(conn, book_id, str(cover_path))
 

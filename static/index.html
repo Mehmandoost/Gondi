@@ -8,7 +8,16 @@
   </head>
   <body>
     <header class="topbar">
-      <h1>Gondi</h1>
+      <div class="topbar-title">
+        <h1>Gondi</h1>
+        <div class="library-row">
+          <label class="library-label" for="library-select">Library</label>
+          <select id="library-select" aria-label="Active library"></select>
+          <button type="button" id="library-new" title="New library">New</button>
+          <button type="button" id="library-rename" title="Rename library">Rename</button>
+          <button type="button" id="library-delete" title="Delete library">Delete</button>
+        </div>
+      </div>
       <div class="search-row">
         <input
           type="search"

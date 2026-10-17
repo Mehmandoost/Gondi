@@ -29,11 +29,46 @@ body {
   background: var(--surface);
 }
 
+.topbar-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
 .topbar h1 {
-  margin: 0 0 0.75rem;
+  margin: 0;
   font-size: 1.35rem;
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+.library-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.library-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.library-row select {
+  min-width: 10rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+#library-delete {
+  color: var(--danger);
 }
 
 .search-row {

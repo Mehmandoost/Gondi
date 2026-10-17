@@ -1,33 +1,180 @@
+import json
 import re
+import shutil
 import sqlite3
+import uuid
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
-DB_PATH = DATA_DIR / "library.db"
-BOOKS_DIR = DATA_DIR / "books"
-COVERS_DIR = DATA_DIR / "covers"
+LIBRARIES_DIR = DATA_DIR / "libraries"
+LIBRARIES_JSON = DATA_DIR / "libraries.json"
 
 SUPPORTED_FORMATS = {"epub", "pdf", "mobi", "azw3"}
 
 
 def ensure_data_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    BOOKS_DIR.mkdir(parents=True, exist_ok=True)
-    COVERS_DIR.mkdir(parents=True, exist_ok=True)
+    LIBRARIES_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def get_connection() -> sqlite3.Connection:
+def _load_registry() -> list[dict[str, str]]:
+    if not LIBRARIES_JSON.is_file():
+        return []
+    try:
+        data = json.loads(LIBRARIES_JSON.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return [{"id": str(x["id"]), "name": str(x["name"])} for x in data]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        pass
+    return []
+
+
+def _save_registry(libraries: list[dict[str, str]]) -> None:
     ensure_data_dirs()
-    conn = sqlite3.connect(DB_PATH)
+    LIBRARIES_JSON.write_text(
+        json.dumps(libraries, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def _slug_from_name(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    return slug or "library"
+
+
+def _unique_library_id(name: str, existing_ids: set[str]) -> str:
+    base = _slug_from_name(name)
+    if base not in existing_ids:
+        return base
+    for _ in range(100):
+        candidate = f"{base}-{uuid.uuid4().hex[:6]}"
+        if candidate not in existing_ids:
+            return candidate
+    return f"library-{uuid.uuid4().hex[:8]}"
+
+
+def library_dir(library_id: str) -> Path:
+    return LIBRARIES_DIR / library_id
+
+
+def library_db_path(library_id: str) -> Path:
+    return library_dir(library_id) / "library.db"
+
+
+def library_books_dir(library_id: str) -> Path:
+    return library_dir(library_id) / "books"
+
+
+def library_covers_dir(library_id: str) -> Path:
+    return library_dir(library_id) / "covers"
+
+
+def ensure_library_dirs(library_id: str) -> None:
+    ensure_data_dirs()
+    lib = library_dir(library_id)
+    lib.mkdir(parents=True, exist_ok=True)
+    library_books_dir(library_id).mkdir(parents=True, exist_ok=True)
+    library_covers_dir(library_id).mkdir(parents=True, exist_ok=True)
+
+
+def _migrate_legacy_data() -> None:
+    legacy_db = DATA_DIR / "library.db"
+    if not legacy_db.is_file():
+        return
+    if LIBRARIES_DIR.is_dir() and any(LIBRARIES_DIR.iterdir()):
+        return
+    library_id = "default"
+    ensure_library_dirs(library_id)
+    dest = library_dir(library_id)
+    shutil.move(str(legacy_db), str(dest / "library.db"))
+    legacy_books = DATA_DIR / "books"
+    if legacy_books.is_dir():
+        shutil.move(str(legacy_books), str(dest / "books"))
+    else:
+        library_books_dir(library_id).mkdir(parents=True, exist_ok=True)
+    legacy_covers = DATA_DIR / "covers"
+    if legacy_covers.is_dir():
+        shutil.move(str(legacy_covers), str(dest / "covers"))
+    else:
+        library_covers_dir(library_id).mkdir(parents=True, exist_ok=True)
+    _save_registry([{"id": library_id, "name": "Library"}])
+
+
+def list_libraries() -> list[dict[str, str]]:
+    return _load_registry()
+
+
+def get_library(library_id: str) -> dict[str, str] | None:
+    for lib in _load_registry():
+        if lib["id"] == library_id:
+            return lib
+    return None
+
+
+def create_library(name: str) -> dict[str, str]:
+    name = name.strip() or "Library"
+    libraries = _load_registry()
+    existing_ids = {lib["id"] for lib in libraries}
+    library_id = _unique_library_id(name, existing_ids)
+    ensure_library_dirs(library_id)
+    libraries.append({"id": library_id, "name": name})
+    _save_registry(libraries)
+    init_library_schema(library_id)
+    return {"id": library_id, "name": name}
+
+
+def rename_library(library_id: str, name: str) -> dict[str, str] | None:
+    name = name.strip()
+    if not name:
+        return None
+    libraries = _load_registry()
+    for lib in libraries:
+        if lib["id"] == library_id:
+            lib["name"] = name
+            _save_registry(libraries)
+            return {"id": library_id, "name": name}
+    return None
+
+
+def delete_library(library_id: str) -> bool:
+    libraries = _load_registry()
+    if len(libraries) <= 1:
+        return False
+    if not any(lib["id"] == library_id for lib in libraries):
+        return False
+    libraries = [lib for lib in libraries if lib["id"] != library_id]
+    _save_registry(libraries)
+    lib_path = library_dir(library_id)
+    if lib_path.is_dir():
+        shutil.rmtree(lib_path)
+    return True
+
+
+def init_libraries() -> None:
+    ensure_data_dirs()
+    _migrate_legacy_data()
+    libraries = _load_registry()
+    if not libraries:
+        create_library("Library")
+        return
+    for lib in libraries:
+        ensure_library_dirs(lib["id"])
+        init_library_schema(lib["id"])
+
+
+def get_connection(library_id: str) -> sqlite3.Connection:
+    if not get_library(library_id):
+        raise ValueError(f"Unknown library: {library_id}")
+    ensure_library_dirs(library_id)
+    conn = sqlite3.connect(library_db_path(library_id))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
-def init_db() -> None:
-    with get_connection() as conn:
+def init_library_schema(library_id: str) -> None:
+    with get_connection(library_id) as conn:
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS books (
@@ -92,6 +239,10 @@ def init_db() -> None:
         )
         _migrate_fts_if_needed(conn)
         conn.commit()
+
+
+def init_db() -> None:
+    init_libraries()
 
 
 def _migrate_fts_if_needed(conn: sqlite3.Connection) -> None:
@@ -512,10 +663,11 @@ def list_filter_options(conn: sqlite3.Connection) -> dict[str, list[str]]:
     return {"authors": authors, "tags": tags, "series": series, "formats": formats}
 
 
-def safe_data_path(path: Path) -> bool:
+def safe_data_path(path: Path, library_id: str) -> bool:
     try:
         resolved = path.resolve()
-        data_resolved = DATA_DIR.resolve()
-        return str(resolved).startswith(str(data_resolved) + "/") or resolved == data_resolved
+        lib_resolved = library_dir(library_id).resolve()
+        prefix = str(lib_resolved) + "/"
+        return str(resolved).startswith(prefix) or resolved == lib_resolved
     except OSError:
         return False

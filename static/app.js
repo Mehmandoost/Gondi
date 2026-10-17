@@ -1,4 +1,8 @@
+const LIBRARY_STORAGE_KEY = "gondi-library-id";
+
 const state = {
+  libraries: [],
+  libraryId: null,
   books: [],
   filters: { authors: [], tags: [], series: [], formats: [] },
   query: "",
@@ -7,6 +11,11 @@ const state = {
 };
 
 const $ = (sel) => document.querySelector(sel);
+
+function apiBase() {
+  if (!state.libraryId) throw new Error("No library selected");
+  return `/api/libraries/${encodeURIComponent(state.libraryId)}`;
+}
 
 function showStatus(message, isError = false) {
   const el = $("#status");
@@ -35,6 +44,17 @@ async function api(path, options = {}) {
   return res;
 }
 
+function resetCatalogView() {
+  state.query = "";
+  state.active = { author: "", tag: "", series: "", format: "" };
+  state.selectedId = null;
+  state.books = [];
+  const search = $("#search-input");
+  if (search) search.value = "";
+  const panel = $("#detail-panel");
+  if (panel) panel.hidden = true;
+}
+
 function buildBooksUrl() {
   const params = new URLSearchParams();
   if (state.query) params.set("q", state.query);
@@ -43,15 +63,62 @@ function buildBooksUrl() {
   if (state.active.series) params.set("series", state.active.series);
   if (state.active.format) params.set("format", state.active.format);
   const qs = params.toString();
-  return `/api/books${qs ? `?${qs}` : ""}`;
+  return `${apiBase()}/books${qs ? `?${qs}` : ""}`;
+}
+
+function renderLibrarySelect() {
+  const select = $("#library-select");
+  if (!select) return;
+  select.innerHTML = state.libraries
+    .map(
+      (lib) =>
+        `<option value="${escapeAttr(lib.id)}"${
+          lib.id === state.libraryId ? " selected" : ""
+        }>${escapeHtml(lib.name)}</option>`
+    )
+    .join("");
+  select.disabled = !state.libraries.length;
+}
+
+async function loadLibraries() {
+  state.libraries = await api("/api/libraries");
+  if (!state.libraries.length) {
+    state.libraryId = null;
+    renderLibrarySelect();
+    return;
+  }
+  const stored = localStorage.getItem(LIBRARY_STORAGE_KEY);
+  if (stored && state.libraries.some((l) => l.id === stored)) {
+    state.libraryId = stored;
+  } else {
+    state.libraryId = state.libraries[0].id;
+    localStorage.setItem(LIBRARY_STORAGE_KEY, state.libraryId);
+  }
+  renderLibrarySelect();
+}
+
+async function switchLibrary(libraryId) {
+  if (!libraryId || libraryId === state.libraryId) return;
+  state.libraryId = libraryId;
+  localStorage.setItem(LIBRARY_STORAGE_KEY, libraryId);
+  resetCatalogView();
+  renderLibrarySelect();
+  await loadFilters();
+  await loadBooks();
 }
 
 async function loadFilters() {
-  state.filters = await api("/api/filters");
+  if (!state.libraryId) return;
+  state.filters = await api(`${apiBase()}/filters`);
   renderFilters();
 }
 
 async function loadBooks() {
+  if (!state.libraryId) {
+    state.books = [];
+    renderGrid();
+    return;
+  }
   state.books = await api(buildBooksUrl());
   renderGrid();
 }
@@ -124,15 +191,23 @@ function escapeAttr(str) {
 
 function coverUrl(book) {
   if (!book.has_cover) return null;
-  return `/api/books/${book.id}/cover`;
+  return `${apiBase()}/books/${book.id}/cover`;
 }
 
 function renderGrid() {
   const grid = $("#book-grid");
   const empty = $("#empty-state");
+  if (!state.libraryId) {
+    grid.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = "Create a library to get started.";
+    return;
+  }
   if (!state.books.length) {
     grid.innerHTML = "";
     empty.hidden = false;
+    empty.innerHTML =
+      "Your library is empty. Use <strong>Import folder</strong> with a path on this machine, or upload a single ebook file.";
     return;
   }
   empty.hidden = true;
@@ -170,7 +245,7 @@ function renderGrid() {
 async function openDetail(id) {
   state.selectedId = id;
   renderGrid();
-  const book = await api(`/api/books/${id}`);
+  const book = await api(`${apiBase()}/books/${id}`);
   const panel = $("#detail-panel");
   const content = $("#detail-content");
   panel.hidden = false;
@@ -178,7 +253,7 @@ async function openDetail(id) {
   const formats = (book.formats || [])
     .map(
       (f) =>
-        `<a href="/api/books/${book.id}/file/${f.format}" download>${escapeHtml(
+        `<a href="${apiBase()}/books/${book.id}/file/${f.format}" download>${escapeHtml(
           f.format
         )}</a>`
     )
@@ -188,7 +263,7 @@ async function openDetail(id) {
     <div class="detail-cover">
       ${
         book.has_cover
-          ? `<img src="/api/books/${book.id}/cover" alt="" />`
+          ? `<img src="${apiBase()}/books/${book.id}/cover" alt="" />`
           : `<div class="no-cover large">${escapeHtml(book.title.slice(0, 1))}</div>`
       }
     </div>
@@ -232,7 +307,10 @@ async function openDetail(id) {
       description: fd.get("description") || null,
     };
     try {
-      await api(`/api/books/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+      await api(`${apiBase()}/books/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      });
       showStatus("Saved.");
       await loadBooks();
       await loadFilters();
@@ -260,7 +338,9 @@ async function openMetadataDialog(bookId) {
   list.innerHTML = "<p>Loading…</p>";
   dialog.showModal();
   try {
-    const candidates = await api(`/api/books/${bookId}/metadata-candidates`);
+    const candidates = await api(
+      `${apiBase()}/books/${bookId}/metadata-candidates`
+    );
     if (!candidates.length) {
       list.innerHTML = "<p>No matches found.</p>";
       return;
@@ -279,7 +359,7 @@ async function openMetadataDialog(bookId) {
       btn.addEventListener("click", async () => {
         const idx = Number(btn.dataset.index);
         try {
-          await api(`/api/books/${bookId}/apply-metadata`, {
+          await api(`${apiBase()}/books/${bookId}/apply-metadata`, {
             method: "POST",
             body: JSON.stringify({ candidate: candidates[idx] }),
           });
@@ -298,7 +378,74 @@ async function openMetadataDialog(bookId) {
   }
 }
 
+async function createLibrary() {
+  const name = window.prompt("New library name:");
+  if (!name || !name.trim()) return;
+  try {
+    const lib = await api("/api/libraries", {
+      method: "POST",
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    await loadLibraries();
+    await switchLibrary(lib.id);
+    showStatus(`Created “${lib.name}”.`);
+  } catch (err) {
+    showStatus(err.message, true);
+  }
+}
+
+async function renameLibrary() {
+  const current = state.libraries.find((l) => l.id === state.libraryId);
+  if (!current) return;
+  const name = window.prompt("Rename library:", current.name);
+  if (!name || !name.trim() || name.trim() === current.name) return;
+  try {
+    const lib = await api(`/api/libraries/${encodeURIComponent(state.libraryId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    await loadLibraries();
+    state.libraryId = lib.id;
+    renderLibrarySelect();
+    showStatus("Library renamed.");
+  } catch (err) {
+    showStatus(err.message, true);
+  }
+}
+
+async function deleteLibrary() {
+  if (state.libraries.length <= 1) {
+    showStatus("Cannot delete the last library.", true);
+    return;
+  }
+  const current = state.libraries.find((l) => l.id === state.libraryId);
+  if (!current) return;
+  const ok = window.confirm(
+    `Delete library “${current.name}” and all its books? This cannot be undone.`
+  );
+  if (!ok) return;
+  try {
+    await api(`/api/libraries/${encodeURIComponent(state.libraryId)}`, {
+      method: "DELETE",
+    });
+    resetCatalogView();
+    await loadLibraries();
+    await loadFilters();
+    await loadBooks();
+    showStatus("Library deleted.");
+  } catch (err) {
+    showStatus(err.message, true);
+  }
+}
+
 function wireEvents() {
+  $("#library-select").addEventListener("change", (e) => {
+    switchLibrary(e.target.value);
+  });
+  $("#library-new").addEventListener("click", () => createLibrary());
+  $("#library-rename").addEventListener("click", () => renameLibrary());
+  $("#library-delete").addEventListener("click", () => deleteLibrary());
+
   $("#search-input").addEventListener(
     "input",
     debounce((e) => {
@@ -318,7 +465,7 @@ function wireEvents() {
     $("#import-dialog").close();
     showStatus("Importing…");
     try {
-      const result = await api("/api/import", {
+      const result = await api(`${apiBase()}/import`, {
         method: "POST",
         body: JSON.stringify({ path }),
       });
@@ -338,7 +485,10 @@ function wireEvents() {
     form.append("file", file);
     showStatus("Uploading…");
     try {
-      const res = await fetch("/api/books/upload", { method: "POST", body: form });
+      const res = await fetch(`${apiBase()}/books/upload`, {
+        method: "POST",
+        body: form,
+      });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       showStatus(`Upload: ${data.status}.`);
@@ -368,6 +518,7 @@ function debounce(fn, ms) {
 
 async function init() {
   wireEvents();
+  await loadLibraries();
   await loadFilters();
   await loadBooks();
 }

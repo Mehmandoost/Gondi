@@ -143,24 +143,28 @@ def parse_file(path: Path) -> ParsedBook:
     return _parse_filename(path)
 
 
-def _save_cover(book_id: int, data: bytes, ext: str) -> str:
+def _save_cover(library_id: str, book_id: int, data: bytes, ext: str) -> str:
     ext = ext if ext.startswith(".") else f".{ext}"
     if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
         ext = ".jpg"
-    cover_path = db.COVERS_DIR / f"{book_id}{ext}"
+    cover_path = db.library_covers_dir(library_id) / f"{book_id}{ext}"
     cover_path.write_bytes(data)
     return str(cover_path)
 
 
-def _copy_book_file(src: Path, book_id: int, fmt: str) -> tuple[str, int]:
-    dest_dir = db.BOOKS_DIR / str(book_id)
+def _copy_book_file(
+    library_id: str, src: Path, book_id: int, fmt: str
+) -> tuple[str, int]:
+    dest_dir = db.library_books_dir(library_id) / str(book_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{fmt}{src.suffix.lower()}"
     shutil.copy2(src, dest)
     return str(dest), dest.stat().st_size
 
 
-def import_file(path: Path, conn) -> tuple[str, int | None]:
+def import_file(
+    path: Path, conn, library_id: str
+) -> tuple[str, int | None]:
     """
     Returns (status, book_id) where status is 'added', 'merged', or 'skipped'.
     """
@@ -198,7 +202,7 @@ def import_file(path: Path, conn) -> tuple[str, int | None]:
         )
         status = "added"
 
-    file_path, file_size = _copy_book_file(path, book_id, fmt)
+    file_path, file_size = _copy_book_file(library_id, path, book_id, fmt)
     db.add_format(conn, book_id, fmt, file_path, file_size)
 
     if parsed.cover_bytes:
@@ -206,28 +210,30 @@ def import_file(path: Path, conn) -> tuple[str, int | None]:
             "SELECT cover_path FROM books WHERE id = ?", (book_id,)
         ).fetchone()
         if not row or not row["cover_path"]:
-            cover_path = _save_cover(book_id, parsed.cover_bytes, parsed.cover_ext)
+            cover_path = _save_cover(
+                library_id, book_id, parsed.cover_bytes, parsed.cover_ext
+            )
             db.set_book_cover(conn, book_id, cover_path)
 
     conn.commit()
     return (status, book_id)
 
 
-def import_folder(folder: str | Path) -> ImportResult:
+def import_folder(library_id: str, folder: str | Path) -> ImportResult:
     result = ImportResult()
     root = Path(folder).expanduser().resolve()
     if not root.is_dir():
         result.errors.append(f"Not a directory: {root}")
         return result
 
-    with db.get_connection() as conn:
+    with db.get_connection(library_id) as conn:
         for path in sorted(root.rglob("*")):
             if not path.is_file():
                 continue
             if path.suffix.lower() not in EBOOK_EXTENSIONS:
                 continue
             try:
-                status, _ = import_file(path, conn)
+                status, _ = import_file(path, conn, library_id)
                 if status == "added":
                     result.added += 1
                 elif status == "merged":
@@ -241,12 +247,14 @@ def import_folder(folder: str | Path) -> ImportResult:
     return result
 
 
-def import_uploaded_file(temp_path: Path, original_name: str) -> tuple[str, int]:
+def import_uploaded_file(
+    library_id: str, temp_path: Path, original_name: str
+) -> tuple[str, int]:
     suffix = Path(original_name).suffix.lower()
     if suffix not in EBOOK_EXTENSIONS:
         raise ValueError(f"Unsupported file type: {suffix}")
-    with db.get_connection() as conn:
-        status, book_id = import_file(temp_path, conn)
+    with db.get_connection(library_id) as conn:
+        status, book_id = import_file(temp_path, conn, library_id)
         if book_id is None:
             raise ValueError("Could not import file")
         return status, book_id
