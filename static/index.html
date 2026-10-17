@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gondi — Book Library</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Gondi</h1>
+      <div class="search-row">
+        <input
+          type="search"
+          id="search-input"
+          placeholder="Search title, author, tags…"
+          autocomplete="off"
+        />
+        <button type="button" id="import-btn" class="primary">Import folder</button>
+        <label class="upload-btn">
+          Upload file
+          <input type="file" id="upload-input" accept=".epub,.pdf,.mobi,.azw3" hidden />
+        </label>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar" id="filters"></aside>
+      <section class="grid-wrap">
+        <div id="status" class="status" hidden></div>
+        <div id="book-grid" class="book-grid"></div>
+        <p id="empty-state" class="empty" hidden>
+          Your library is empty. Use <strong>Import folder</strong> with a path on this
+          machine, or upload a single ebook file.
+        </p>
+      </section>
+      <aside class="detail" id="detail-panel" hidden>
+        <button type="button" class="close-detail" id="close-detail" aria-label="Close">
+          ×
+        </button>
+        <div id="detail-content"></div>
+      </aside>
+    </main>
+
+    <dialog id="import-dialog">
+      <form method="dialog" id="import-form">
+        <h2>Import folder</h2>
+        <p class="hint">Enter an absolute path to a folder of ebook files.</p>
+        <input
+          type="text"
+          id="import-path"
+          placeholder="/home/you/Books"
+          required
+          autocomplete="off"
+        />
+        <div class="dialog-actions">
+          <button type="button" value="cancel">Cancel</button>
+          <button type="submit" value="ok" class="primary">Import</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="metadata-dialog">
+      <form method="dialog">
+        <h2>Metadata from Open Library</h2>
+        <div id="metadata-list" class="metadata-list"></div>
+        <div class="dialog-actions">
+          <button type="button" value="cancel">Close</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
