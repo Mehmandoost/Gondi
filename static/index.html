@@ -69,6 +69,64 @@
       </form>
     </dialog>
 
+    <div id="reader-overlay" class="reader-overlay" hidden>
+      <header class="reader-toolbar">
+        <button type="button" id="reader-close">Close</button>
+        <span id="reader-title" class="reader-title"></span>
+        <select id="reader-format" aria-label="Book format" hidden></select>
+        <div class="reader-pager">
+          <button type="button" id="reader-prev">Prev</button>
+          <label class="reader-page-label">
+            Page
+            <input type="number" id="reader-page-input" min="1" value="1" />
+            /
+            <span id="reader-page-count">1</span>
+          </label>
+          <button type="button" id="reader-next">Next</button>
+        </div>
+      </header>
+      <div class="reader-main">
+        <div class="reader-stage-wrap">
+          <div id="reader-page" class="reader-page">
+            <img id="reader-page-img" class="reader-page-img" alt="" />
+            <div id="reader-highlights-layer" class="reader-highlights-layer"></div>
+            <div id="reader-text-layer" class="reader-text-layer"></div>
+          </div>
+          <div id="reader-selection-popover" class="reader-selection-popover" hidden>
+            <label class="reader-popover-label" for="reader-new-notation">Notation</label>
+            <textarea
+              id="reader-new-notation"
+              class="reader-popover-textarea"
+              rows="3"
+              placeholder="Optional note for this highlight…"
+            ></textarea>
+            <button type="button" id="reader-save-highlight" class="primary">
+              Highlight
+            </button>
+          </div>
+        </div>
+        <aside class="reader-sidebar">
+          <section id="reader-note-editor" class="reader-note-editor" hidden>
+            <h3 class="reader-note-editor-title">Edit notation</h3>
+            <blockquote id="reader-note-quote" class="reader-note-quote"></blockquote>
+            <label class="reader-popover-label" for="reader-note-text">Notation</label>
+            <textarea
+              id="reader-note-text"
+              class="reader-note-text"
+              rows="5"
+              placeholder="Write your notation…"
+            ></textarea>
+            <div class="reader-note-actions">
+              <button type="button" id="reader-note-save" class="primary">Save notation</button>
+              <button type="button" id="reader-note-delete" class="danger">Delete highlight</button>
+            </div>
+          </section>
+          <h3 class="reader-sidebar-title">Highlights on this page</h3>
+          <ul id="reader-highlight-list" class="reader-highlight-list"></ul>
+        </aside>
+      </div>
+    </div>
+
     <dialog id="metadata-dialog">
       <form method="dialog">
         <h2>Metadata from Open Library</h2>

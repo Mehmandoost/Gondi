@@ -14,6 +14,7 @@ LIBRARIES_DIR = DATA_DIR / "libraries"
 LIBRARIES_JSON = DATA_DIR / "libraries.json"
 
 SUPPORTED_FORMATS = {"epub", "pdf", "mobi", "azw3"}
+READER_FORMATS = ("pdf", "epub", "mobi", "azw3")
 
 _PATH_UNSAFE = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
 _MAX_PATH_COMPONENT = 120
@@ -444,6 +445,29 @@ def init_library_schema(library_id: str) -> None:
                 UNIQUE (book_id, format)
             );
 
+            CREATE TABLE IF NOT EXISTS reading_progress (
+                book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+                format TEXT NOT NULL,
+                page INTEGER NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (book_id, format)
+            );
+
+            CREATE TABLE IF NOT EXISTS highlights (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+                format TEXT NOT NULL,
+                page INTEGER NOT NULL,
+                quote TEXT NOT NULL,
+                note TEXT,
+                rects_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_highlights_book_page
+                ON highlights(book_id, format, page);
+
             CREATE VIRTUAL TABLE IF NOT EXISTS books_fts USING fts5(
                 title,
                 authors,
@@ -842,11 +866,179 @@ def remove_format(
         "DELETE FROM formats WHERE book_id = ? AND format = ?",
         (book_id, fmt),
     )
+    delete_reader_data_for_format(conn, book_id, fmt)
     conn.execute(
         "UPDATE books SET updated_at = datetime('now') WHERE id = ?",
         (book_id,),
     )
     return row["file_path"]
+
+
+def delete_reader_data_for_format(
+    conn: sqlite3.Connection, book_id: int, format_name: str
+) -> None:
+    fmt = format_name.lower()
+    conn.execute(
+        "DELETE FROM highlights WHERE book_id = ? AND format = ?",
+        (book_id, fmt),
+    )
+    conn.execute(
+        "DELETE FROM reading_progress WHERE book_id = ? AND format = ?",
+        (book_id, fmt),
+    )
+
+
+def list_reader_formats(conn: sqlite3.Connection, book_id: int) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT format FROM formats
+        WHERE book_id = ? AND format IN ('pdf', 'epub', 'mobi', 'azw3')
+        ORDER BY format
+        """,
+        (book_id,),
+    ).fetchall()
+    available = {r["format"] for r in rows}
+    return [fmt for fmt in READER_FORMATS if fmt in available]
+
+
+def get_reading_progress(
+    conn: sqlite3.Connection, book_id: int, format_name: str
+) -> int | None:
+    row = conn.execute(
+        """
+        SELECT page FROM reading_progress
+        WHERE book_id = ? AND format = ?
+        """,
+        (book_id, format_name.lower()),
+    ).fetchone()
+    return int(row["page"]) if row else None
+
+
+def set_reading_progress(
+    conn: sqlite3.Connection, book_id: int, format_name: str, page: int
+) -> None:
+    fmt = format_name.lower()
+    conn.execute(
+        """
+        INSERT INTO reading_progress (book_id, format, page, updated_at)
+        VALUES (?, ?, ?, datetime('now'))
+        ON CONFLICT(book_id, format) DO UPDATE SET
+            page = excluded.page,
+            updated_at = datetime('now')
+        """,
+        (book_id, fmt, page),
+    )
+
+
+def list_highlights(
+    conn: sqlite3.Connection,
+    book_id: int,
+    format_name: str,
+    *,
+    page: int | None = None,
+) -> list[dict[str, Any]]:
+    fmt = format_name.lower()
+    if page is not None:
+        rows = conn.execute(
+            """
+            SELECT * FROM highlights
+            WHERE book_id = ? AND format = ? AND page = ?
+            ORDER BY id
+            """,
+            (book_id, fmt, page),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT * FROM highlights
+            WHERE book_id = ? AND format = ?
+            ORDER BY page, id
+            """,
+            (book_id, fmt),
+        ).fetchall()
+    return [_highlight_to_dict(r) for r in rows]
+
+
+def _highlight_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "book_id": row["book_id"],
+        "format": row["format"],
+        "page": row["page"],
+        "quote": row["quote"],
+        "note": row["note"],
+        "rects": json.loads(row["rects_json"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def create_highlight(
+    conn: sqlite3.Connection,
+    book_id: int,
+    format_name: str,
+    page: int,
+    quote: str,
+    rects: list[dict[str, float]],
+    note: str | None = None,
+) -> dict[str, Any]:
+    from app.reader import normalize_rects
+
+    fmt = format_name.lower()
+    quote_text = quote.strip()
+    if not quote_text:
+        raise ValueError("quote is required")
+    if not rects:
+        raise ValueError("rects are required")
+    cur = conn.execute(
+        """
+        INSERT INTO highlights (book_id, format, page, quote, note, rects_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (book_id, fmt, page, quote_text, note, json.dumps(normalize_rects(rects))),
+    )
+    row = conn.execute(
+        "SELECT * FROM highlights WHERE id = ?", (cur.lastrowid,)
+    ).fetchone()
+    return _highlight_to_dict(row)
+
+
+def update_highlight_note(
+    conn: sqlite3.Connection, highlight_id: int, note: str | None
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT id FROM highlights WHERE id = ?", (highlight_id,)
+    ).fetchone()
+    if not row:
+        return None
+    conn.execute(
+        """
+        UPDATE highlights
+        SET note = ?, updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (note, highlight_id),
+    )
+    updated = conn.execute(
+        "SELECT * FROM highlights WHERE id = ?", (highlight_id,)
+    ).fetchone()
+    return _highlight_to_dict(updated)
+
+
+def delete_highlight(conn: sqlite3.Connection, highlight_id: int) -> bool:
+    cur = conn.execute("DELETE FROM highlights WHERE id = ?", (highlight_id,))
+    return cur.rowcount > 0
+
+
+def get_highlight(
+    conn: sqlite3.Connection, highlight_id: int
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM highlights WHERE id = ?", (highlight_id,)
+    ).fetchone()
+    if not row:
+        return None
+    return _highlight_to_dict(row)
 
 
 def delete_book(conn: sqlite3.Connection, library_id: str, book_id: int) -> bool:

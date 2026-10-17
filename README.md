@@ -34,3 +34,4 @@ Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
 - **Book detail** — add or remove format files on a book, or delete the book entirely (removing the last file deletes the book).
 - **Search** — matches title, author, tags, series, and description (SQLite FTS5).
 - **Fetch metadata** — on a book’s detail panel, pick a match from Open Library to fill fields and download a cover.
+- **Read** — open a book in the page reader (PDF, EPUB, MOBI, or AZW3). Use **Prev** / **Next**, the page field, or arrow keys to move through pages; your place is saved per format. Select text to open the highlight popover, add an optional **notation**, and click **Highlight**. Click a highlight on the page or in the sidebar to edit its notation (**Save notation**, or Ctrl/Cmd+Enter). Replace or remove a format file to clear its highlights and reading progress for that book.

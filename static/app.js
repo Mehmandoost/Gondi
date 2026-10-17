@@ -1,4 +1,7 @@
+import { openReader, setupReader } from "./reader.js";
+
 const LIBRARY_STORAGE_KEY = "gondi-library-id";
+const READER_FORMATS = new Set(["pdf", "epub", "mobi", "azw3"]);
 
 const state = {
   libraries: [],
@@ -299,7 +302,16 @@ async function openDetail(id) {
     )
     .join("");
 
+  const canRead = (book.formats || []).some((f) =>
+    READER_FORMATS.has(f.format)
+  );
+
   content.innerHTML = `
+    ${
+      canRead
+        ? `<button type="button" id="read-book" class="primary detail-read">Read</button>`
+        : ""
+    }
     <div class="detail-cover">
       ${
         book.has_cover
@@ -343,6 +355,10 @@ async function openDetail(id) {
       <button type="button" id="delete-book" class="danger">Delete book</button>
     </div>
   `;
+
+  content.querySelector("#read-book")?.addEventListener("click", () => {
+    openReader(id);
+  });
 
   content.querySelector("#edit-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -640,6 +656,13 @@ function debounce(fn, ms) {
 }
 
 async function init() {
+  setupReader({
+    apiBase,
+    api,
+    escapeHtml,
+    escapeAttr,
+    showStatus,
+  });
   wireEvents();
   await loadLibraries();
   await loadFilters();
