@@ -15,6 +15,9 @@ LIBRARIES_JSON = DATA_DIR / "libraries.json"
 
 SUPPORTED_FORMATS = {"epub", "pdf", "mobi", "azw3"}
 
+_PATH_UNSAFE = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
+_MAX_PATH_COMPONENT = 120
+
 
 def ensure_data_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -72,6 +75,192 @@ def library_covers_dir(library_id: str) -> Path:
     return library_dir(library_id) / "covers"
 
 
+def sanitize_path_component(name: str | None) -> str:
+    if not name or not str(name).strip():
+        return "Unknown"
+    text = _PATH_UNSAFE.sub(" ", str(name).strip())
+    text = re.sub(r"\s+", " ", text).strip().rstrip(". ")
+    if not text:
+        return "Unknown"
+    if len(text) > _MAX_PATH_COMPONENT:
+        text = text[:_MAX_PATH_COMPONENT].rstrip(". ")
+    return text or "Unknown"
+
+
+def _path_is_under(path: Path, parent: Path) -> bool:
+    try:
+        resolved = path.resolve()
+        root = parent.resolve()
+        prefix = str(root) + "/"
+        return str(resolved).startswith(prefix) or resolved == root
+    except OSError:
+        return False
+
+
+def _storage_dir_used_by_other_book(
+    conn: sqlite3.Connection, book_id: int, dir_path: Path
+) -> bool:
+    try:
+        dir_resolved = dir_path.resolve()
+        dir_prefix = str(dir_resolved) + "/"
+    except OSError:
+        return False
+    rows = conn.execute(
+        "SELECT book_id, file_path FROM formats WHERE book_id != ?",
+        (book_id,),
+    ).fetchall()
+    for row in rows:
+        try:
+            other = Path(row["file_path"]).resolve()
+        except OSError:
+            continue
+        if str(other).startswith(dir_prefix) or other == dir_resolved:
+            return True
+    return False
+
+
+def book_storage_dir(
+    library_id: str,
+    conn: sqlite3.Connection,
+    book_id: int,
+    *,
+    title: str | None = None,
+    authors: list[str] | None = None,
+) -> Path:
+    if title is None:
+        row = conn.execute("SELECT title FROM books WHERE id = ?", (book_id,)).fetchone()
+        title = row["title"] if row else "Unknown"
+    if authors is None:
+        authors = _book_author_names(conn, book_id)
+    author_name = sanitize_path_component(authors[0] if authors else "Unknown")
+    title_name = sanitize_path_component(title or "Unknown")
+    books_root = library_books_dir(library_id)
+    base_dir = books_root / author_name / title_name
+    if _storage_dir_used_by_other_book(conn, book_id, base_dir):
+        title_name = f"{title_name} ({book_id})"
+        base_dir = books_root / author_name / title_name
+    return base_dir
+
+
+def book_format_dest_path(
+    library_id: str,
+    conn: sqlite3.Connection,
+    book_id: int,
+    suffix: str,
+    *,
+    title: str | None = None,
+    authors: list[str] | None = None,
+) -> Path:
+    if not suffix.startswith("."):
+        suffix = f".{suffix}"
+    if title is None:
+        row = conn.execute("SELECT title FROM books WHERE id = ?", (book_id,)).fetchone()
+        title = row["title"] if row else "Unknown"
+    file_name = sanitize_path_component(title or "Unknown") + suffix.lower()
+    return book_storage_dir(
+        library_id, conn, book_id, title=title, authors=authors
+    ) / file_name
+
+
+def _legacy_format_candidates(
+    library_id: str, book_id: int, format_name: str, stored_path: str
+) -> list[Path]:
+    fmt = format_name.lower()
+    books = library_books_dir(library_id)
+    candidates = [Path(stored_path)]
+    for parent in (books / str(book_id), books / "books" / str(book_id)):
+        candidates.append(parent / f"{fmt}.{fmt}")
+        candidates.append(parent / f"{fmt}{'.' + fmt}")
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def resolve_format_file_on_disk(
+    library_id: str, book_id: int, format_name: str, stored_path: str
+) -> Path | None:
+    for candidate in _legacy_format_candidates(
+        library_id, book_id, format_name, stored_path
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _prune_empty_parents(path: Path, stop_at: Path) -> None:
+    current = path
+    try:
+        stop = stop_at.resolve()
+    except OSError:
+        return
+    while True:
+        try:
+            current = current.resolve()
+        except OSError:
+            break
+        if current == stop or not _path_is_under(current, stop):
+            break
+        if not current.is_dir():
+            break
+        try:
+            next(current.iterdir())
+            break
+        except StopIteration:
+            current.rmdir()
+            current = current.parent
+        except OSError:
+            break
+
+
+def relocate_book_files(
+    conn: sqlite3.Connection, library_id: str, book_id: int
+) -> None:
+    books_root = library_books_dir(library_id)
+    rows = conn.execute(
+        "SELECT format, file_path FROM formats WHERE book_id = ?",
+        (book_id,),
+    ).fetchall()
+    old_parents: set[Path] = set()
+    for row in rows:
+        fmt = row["format"]
+        stored = row["file_path"]
+        src = resolve_format_file_on_disk(library_id, book_id, fmt, stored)
+        if not src:
+            continue
+        dest = book_format_dest_path(library_id, conn, book_id, src.suffix)
+        try:
+            if src.resolve() == dest.resolve():
+                if str(src) != str(dest):
+                    add_format(conn, book_id, fmt, str(dest), src.stat().st_size)
+                continue
+        except OSError:
+            pass
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.is_file() and dest.resolve() != src.resolve():
+            dest.unlink()
+        shutil.move(str(src), str(dest))
+        add_format(conn, book_id, fmt, str(dest), dest.stat().st_size)
+        old_parents.add(src.parent)
+    for parent in old_parents:
+        _prune_empty_parents(parent, books_root)
+
+
+def migrate_library_book_paths(library_id: str) -> None:
+    with get_connection(library_id) as conn:
+        book_ids = [
+            r["id"] for r in conn.execute("SELECT id FROM books").fetchall()
+        ]
+        for book_id in book_ids:
+            relocate_book_files(conn, library_id, book_id)
+        conn.commit()
+
+
 def ensure_library_dirs(library_id: str) -> None:
     ensure_data_dirs()
     lib = library_dir(library_id)
@@ -92,12 +281,35 @@ def _migrate_legacy_data() -> None:
     shutil.move(str(legacy_db), str(dest / "library.db"))
     legacy_books = DATA_DIR / "books"
     if legacy_books.is_dir():
-        shutil.move(str(legacy_books), str(dest / "books"))
+        dest_books = library_books_dir(library_id)
+        dest_books.mkdir(parents=True, exist_ok=True)
+        for item in legacy_books.iterdir():
+            target = dest_books / item.name
+            if target.exists():
+                if target.is_dir():
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+            shutil.move(str(item), str(target))
+        try:
+            legacy_books.rmdir()
+        except OSError:
+            pass
     else:
         library_books_dir(library_id).mkdir(parents=True, exist_ok=True)
     legacy_covers = DATA_DIR / "covers"
     if legacy_covers.is_dir():
-        shutil.move(str(legacy_covers), str(dest / "covers"))
+        dest_covers = library_covers_dir(library_id)
+        dest_covers.mkdir(parents=True, exist_ok=True)
+        for item in legacy_covers.iterdir():
+            target = dest_covers / item.name
+            if target.exists():
+                target.unlink()
+            shutil.move(str(item), str(target))
+        try:
+            legacy_covers.rmdir()
+        except OSError:
+            pass
     else:
         library_covers_dir(library_id).mkdir(parents=True, exist_ok=True)
     _save_registry([{"id": library_id, "name": "Library"}])
@@ -248,6 +460,8 @@ def init_library_schema(library_id: str) -> None:
 
 def init_db() -> None:
     init_libraries()
+    for lib in list_libraries():
+        migrate_library_book_paths(lib["id"])
 
 
 def _migrate_fts_if_needed(conn: sqlite3.Connection) -> None:
@@ -486,10 +700,17 @@ def update_book(
     conn: sqlite3.Connection,
     book_id: int,
     fields: dict[str, Any],
+    *,
+    library_id: str | None = None,
 ) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
     if not row:
         return None
+
+    relocate = library_id and (
+        "title" in fields
+        or ("authors" in fields and fields["authors"] is not None)
+    )
 
     scalar_map = {
         "title": "title",
@@ -525,6 +746,9 @@ def update_book(
         _set_book_authors(conn, book_id, fields["authors"])
     if "tags" in fields and fields["tags"] is not None:
         _set_book_tags(conn, book_id, fields["tags"])
+
+    if relocate:
+        relocate_book_files(conn, library_id, book_id)
 
     refresh_book_fts(conn, book_id)
     updated = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
@@ -582,7 +806,10 @@ def get_book_cover_path(conn: sqlite3.Connection, book_id: int) -> Path | None:
 
 
 def get_format_file_path(
-    conn: sqlite3.Connection, book_id: int, format_name: str
+    conn: sqlite3.Connection,
+    library_id: str,
+    book_id: int,
+    format_name: str,
 ) -> Path | None:
     row = conn.execute(
         "SELECT file_path FROM formats WHERE book_id = ? AND format = ?",
@@ -593,7 +820,9 @@ def get_format_file_path(
     path = Path(row["file_path"])
     if path.is_file():
         return path
-    return None
+    return resolve_format_file_on_disk(
+        library_id, book_id, format_name, row["file_path"]
+    )
 
 
 def list_books(

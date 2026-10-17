@@ -663,11 +663,10 @@ def _save_cover(library_id: str, book_id: int, data: bytes, ext: str) -> str:
 
 
 def _copy_book_file(
-    library_id: str, src: Path, book_id: int, fmt: str
+    library_id: str, conn, src: Path, book_id: int, fmt: str
 ) -> tuple[str, int]:
-    dest_dir = db.library_books_dir(library_id) / str(book_id)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{fmt}{src.suffix.lower()}"
+    dest = db.book_format_dest_path(library_id, conn, book_id, src.suffix)
+    dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dest)
     return str(dest), dest.stat().st_size
 
@@ -676,7 +675,9 @@ def _archive_filename_title(title: str) -> bool:
     return " -- " in title and parse_archive_filename(title) is not None
 
 
-def _backfill_metadata(conn, book_id: int, parsed: ParsedBook) -> None:
+def _backfill_metadata(
+    conn, library_id: str, book_id: int, parsed: ParsedBook
+) -> None:
     """Fill empty catalog fields when the same book is imported again."""
     current = db.get_book(conn, book_id)
     if not current:
@@ -708,7 +709,7 @@ def _backfill_metadata(conn, book_id: int, parsed: ParsedBook) -> None:
     if not current.get("tags") and parsed.tags:
         fields["tags"] = parsed.tags
     if fields:
-        db.update_book(conn, book_id, fields)
+        db.update_book(conn, book_id, fields, library_id=library_id)
 
 
 def import_file(
@@ -734,7 +735,7 @@ def import_file(
 
     if existing_id:
         book_id = existing_id
-        _backfill_metadata(conn, book_id, parsed)
+        _backfill_metadata(conn, library_id, book_id, parsed)
         fmt_row = conn.execute(
             "SELECT id FROM formats WHERE book_id = ? AND format = ?",
             (book_id, fmt),
@@ -760,7 +761,7 @@ def import_file(
         )
         status = "added"
 
-    file_path, file_size = _copy_book_file(library_id, path, book_id, fmt)
+    file_path, file_size = _copy_book_file(library_id, conn, path, book_id, fmt)
     db.add_format(conn, book_id, fmt, file_path, file_size)
 
     _store_cover_if_missing(library_id, conn, book_id, parsed)

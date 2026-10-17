@@ -102,7 +102,11 @@ async def apply_metadata(
             if subjects:
                 fields["tags"] = subjects[:20]
 
-        updated = db.update_book(conn, book_id, fields) if fields else book
+        updated = (
+            db.update_book(conn, book_id, fields, library_id=library_id)
+            if fields
+            else book
+        )
 
         cover_url = candidate.get("cover_url")
         if cover_url:

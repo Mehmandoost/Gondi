@@ -135,7 +135,7 @@ def patch_book(
     _require_library(library_id)
     fields = body.model_dump(exclude_unset=True)
     with db.get_connection(library_id) as conn:
-        updated = db.update_book(conn, book_id, fields)
+        updated = db.update_book(conn, book_id, fields, library_id=library_id)
         if not updated:
             raise HTTPException(status_code=404, detail="Book not found")
         conn.commit()
@@ -238,7 +238,7 @@ def get_cover(library_id: str, book_id: int):
 def get_file(library_id: str, book_id: int, format_name: str):
     _require_library(library_id)
     with db.get_connection(library_id) as conn:
-        path = db.get_format_file_path(conn, book_id, format_name)
+        path = db.get_format_file_path(conn, library_id, book_id, format_name)
     if not path or not db.safe_data_path(path, library_id):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(path, filename=path.name)
