@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 
 from app import db
+from app.languages import normalize_language
 
 OPEN_LIBRARY_SEARCH = "https://openlibrary.org/search.json"
 COVER_BASE = "https://covers.openlibrary.org/b"
@@ -31,7 +32,7 @@ def _doc_to_candidate(doc: dict[str, Any]) -> dict[str, Any]:
         "authors": authors,
         "publisher": (doc.get("publisher") or [None])[0],
         "published_date": str(doc.get("first_publish_year") or ""),
-        "language": (doc.get("language") or [None])[0],
+        "language": normalize_language((doc.get("language") or [None])[0]),
         "isbn": isbn,
         "subjects": doc.get("subject") or [],
         "cover_url": _cover_url(cover_id, isbn),

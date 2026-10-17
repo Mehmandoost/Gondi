@@ -6,6 +6,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from app.languages import normalize_language
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 LIBRARIES_DIR = DATA_DIR / "libraries"
@@ -403,7 +405,7 @@ def book_to_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         "description": row["description"],
         "publisher": row["publisher"],
         "published_date": row["published_date"],
-        "language": row["language"],
+        "language": normalize_language(row["language"]),
         "isbn": row["isbn"],
         "series": row["series"],
         "series_index": row["series_index"],
@@ -449,6 +451,7 @@ def create_book(
     series_index: float | None = None,
 ) -> int:
     title = title.strip() or "Unknown"
+    language = normalize_language(language)
     cur = conn.execute(
         """
         INSERT INTO books (
@@ -501,6 +504,8 @@ def update_book(
         if key in fields:
             updates.append(f"{col} = ?")
             val = fields[key]
+            if key == "language":
+                val = normalize_language(val)
             values.append(val)
             if key == "title":
                 updates.append("title_norm = ?")

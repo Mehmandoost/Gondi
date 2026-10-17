@@ -3,13 +3,18 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import ebooklib
 from ebooklib import epub
 from pypdf import PdfReader
 
 from app import db
+from app.epub_opf import parse_epub_opf
+from app.languages import normalize_language
 
 
 EBOOK_EXTENSIONS = {".epub", ".pdf", ".mobi", ".azw3"}
+
+_VOLUME_SUFFIX = re.compile(r":\s*Volume\s+(\d+)\s*$", re.IGNORECASE)
 
 
 @dataclass
@@ -22,6 +27,8 @@ class ParsedBook:
     language: str | None = None
     isbn: str | None = None
     tags: list[str] = field(default_factory=list)
+    series: str | None = None
+    series_index: float | None = None
     cover_bytes: bytes | None = None
     cover_ext: str = ".jpg"
 
@@ -70,12 +77,127 @@ def _parse_filename(path: Path) -> ParsedBook:
     return ParsedBook(title=title or "Unknown", authors=authors)
 
 
-def parse_epub(path: Path) -> ParsedBook:
+def _epub_creator_roles(book: epub.EpubBook) -> dict[str, str]:
+    roles: dict[str, str] = {}
+    for value, attrs in book.get_metadata("OPF", "meta"):
+        if not attrs:
+            continue
+        if attrs.get("property") != "role":
+            continue
+        refines = attrs.get("refines")
+        if not refines:
+            continue
+        creator_id = refines.lstrip("#")
+        roles[creator_id] = (value or "").strip()
+    return roles
+
+
+def _authors_from_creator_meta(
+    author_meta: list[tuple[str, dict]], roles: dict[str, str]
+) -> list[str]:
+    creators = [
+        ((attrs or {}).get("id"), (name or "").strip())
+        for name, attrs in author_meta
+    ]
+    return _authors_from_creators(creators, roles)
+
+
+def _authors_from_creators(
+    creators: list[tuple[str | None, str]], roles: dict[str, str]
+) -> list[str]:
+    if not creators:
+        return []
+    filter_by_role = bool(roles)
+    authors: list[str] = []
+    for creator_id, name in creators:
+        if not name:
+            continue
+        cid = creator_id or ""
+        if filter_by_role:
+            if roles.get(cid) == "aut":
+                authors.append(name)
+        else:
+            authors.append(name)
+    return authors
+
+
+def _epub_authors(book: epub.EpubBook) -> list[str]:
+    author_meta = book.get_metadata("DC", "creator")
+    if not author_meta:
+        return []
+    return _authors_from_creator_meta(author_meta, _epub_creator_roles(book))
+
+
+def _epub_isbn(book: epub.EpubBook) -> str | None:
+    for value, _attrs in book.get_metadata("DC", "identifier"):
+        if not value:
+            continue
+        digits = re.sub(r"[^0-9]", "", value)
+        if len(digits) in (10, 13):
+            return digits
+    return None
+
+
+def _series_from_title(title: str) -> tuple[str | None, float | None]:
+    match = _VOLUME_SUFFIX.search(title)
+    if not match:
+        return None, None
+    series = title[: match.start()].strip()
+    return (series or None, float(match.group(1)))
+
+
+def _extract_epub_cover(book: epub.EpubBook) -> tuple[bytes | None, str]:
+    cover_ext = ".jpg"
+    try:
+        for item in book.get_items():
+            if item.get_type() == ebooklib.ITEM_COVER:
+                cover_bytes = item.get_content()
+                name = item.get_name() or ""
+                if "." in name:
+                    cover_ext = "." + name.rsplit(".", 1)[-1].lower()
+                return cover_bytes, cover_ext
+    except Exception:
+        pass
+    return None, cover_ext
+
+
+def _build_parsed_epub(
+    *,
+    fallback: ParsedBook,
+    title: str | None,
+    authors: list[str],
+    description: str | None,
+    publisher: str | None,
+    published_date: str | None,
+    language: str | None,
+    isbn: str | None,
+    tags: list[str],
+    cover_bytes: bytes | None,
+    cover_ext: str,
+) -> ParsedBook:
+    resolved_title = title or fallback.title
+    series, series_index = _series_from_title(resolved_title) if resolved_title else (None, None)
+    return ParsedBook(
+        title=resolved_title,
+        authors=authors or fallback.authors,
+        description=description,
+        publisher=publisher,
+        published_date=published_date,
+        language=normalize_language(language),
+        isbn=isbn,
+        tags=tags,
+        series=series,
+        series_index=series_index,
+        cover_bytes=cover_bytes,
+        cover_ext=cover_ext,
+    )
+
+
+def _parse_epub_ebooklib(path: Path, fallback: ParsedBook) -> ParsedBook:
     book = epub.read_epub(str(path))
     meta = book.get_metadata("DC", "title")
     title = _first([m[0] for m in meta]) if meta else None
-    author_meta = book.get_metadata("DC", "creator")
-    authors = [m[0].strip() for m in author_meta if m[0].strip()] if author_meta else []
+    authors = _epub_authors(book)
     desc_meta = book.get_metadata("DC", "description")
     description = _first([m[0] for m in desc_meta]) if desc_meta else None
     pub_meta = book.get_metadata("DC", "publisher")
@@ -86,33 +208,36 @@ def parse_epub(path: Path) -> ParsedBook:
     language = _first([m[0] for m in lang_meta]) if lang_meta else None
     subject_meta = book.get_metadata("DC", "subject")
     tags = [m[0].strip() for m in subject_meta if m[0].strip()] if subject_meta else []
-
-    cover_bytes = None
-    cover_ext = ".jpg"
-    for item in book.get_items():
-        if item.get_type() == epub.ITEM_COVER:
-            cover_bytes = item.get_content()
-            name = item.get_name() or ""
-            if "." in name:
-                cover_ext = "." + name.rsplit(".", 1)[-1].lower()
-            break
-
-    fallback = _parse_filename(path)
-    return ParsedBook(
-        title=title or fallback.title,
-        authors=authors or fallback.authors,
+    isbn = _epub_isbn(book)
+    cover_bytes, cover_ext = _extract_epub_cover(book)
+    return _build_parsed_epub(
+        fallback=fallback,
+        title=title,
+        authors=authors,
         description=description,
         publisher=publisher,
         published_date=published_date,
         language=language,
+        isbn=isbn,
         tags=tags,
         cover_bytes=cover_bytes,
         cover_ext=cover_ext,
     )
 
 
-def parse_pdf(path: Path) -> ParsedBook:
-    fallback = _parse_filename(path)
+def parse_epub(path: Path, fallback_path: Path | None = None) -> ParsedBook:
+    fb_path = fallback_path or path
+    fallback = _parse_filename(fb_path)
+    try:
+        return _parse_epub_ebooklib(path, fallback)
+    except Exception:
+        fields = parse_epub_opf(path)
+        return _build_parsed_epub(fallback=fallback, **fields)
+
+
+def parse_pdf(path: Path, fallback_path: Path | None = None) -> ParsedBook:
+    fb_path = fallback_path or path
+    fallback = _parse_filename(fb_path)
     try:
         reader = PdfReader(str(path))
         info = reader.metadata
@@ -131,16 +256,17 @@ def parse_pdf(path: Path) -> ParsedBook:
         return fallback
 
 
-def parse_file(path: Path) -> ParsedBook:
+def parse_file(path: Path, fallback_path: Path | None = None) -> ParsedBook:
+    fb_path = fallback_path or path
     fmt = format_from_path(path)
     if fmt == "epub":
         try:
-            return parse_epub(path)
+            return parse_epub(path, fallback_path=fb_path)
         except Exception:
-            return _parse_filename(path)
+            return _parse_filename(fb_path)
     if fmt == "pdf":
-        return parse_pdf(path)
-    return _parse_filename(path)
+        return parse_pdf(path, fallback_path=fb_path)
+    return _parse_filename(fb_path)
 
 
 def _save_cover(library_id: str, book_id: int, data: bytes, ext: str) -> str:
@@ -163,7 +289,11 @@ def _copy_book_file(
 
 
 def import_file(
-    path: Path, conn, library_id: str
+    path: Path,
+    conn,
+    library_id: str,
+    *,
+    fallback_path: Path | None = None,
 ) -> tuple[str, int | None]:
     """
     Returns (status, book_id) where status is 'added', 'merged', or 'skipped'.
@@ -176,7 +306,7 @@ def import_file(
     if not fmt:
         return ("skipped", None)
 
-    parsed = parse_file(path)
+    parsed = parse_file(path, fallback_path=fallback_path)
     existing_id = db.find_book_by_title_authors(conn, parsed.title, parsed.authors)
 
     if existing_id:
@@ -199,6 +329,8 @@ def import_file(
             published_date=parsed.published_date,
             language=parsed.language,
             isbn=parsed.isbn,
+            series=parsed.series,
+            series_index=parsed.series_index,
         )
         status = "added"
 
@@ -253,8 +385,11 @@ def import_uploaded_file(
     suffix = Path(original_name).suffix.lower()
     if suffix not in EBOOK_EXTENSIONS:
         raise ValueError(f"Unsupported file type: {suffix}")
+    fallback_path = Path(original_name)
     with db.get_connection(library_id) as conn:
-        status, book_id = import_file(temp_path, conn, library_id)
+        status, book_id = import_file(
+            temp_path, conn, library_id, fallback_path=fallback_path
+        )
         if book_id is None:
             raise ValueError("Could not import file")
         return status, book_id
